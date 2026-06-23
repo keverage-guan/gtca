@@ -1,0 +1,11 @@
+# 1. Ignore everything by default
+*
+
+# 2. But do not ignore directories, otherwise Git won't scan them for Python files
+!*/
+
+# 3. Explicitly allow .gitignore itself so your rules are tracked
+!.gitignore
+
+# 4. Whitelist only Python source files
+!*.py
