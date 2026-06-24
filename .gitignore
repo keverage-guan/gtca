@@ -9,3 +9,4 @@
 
 # 4. Whitelist only Python source files
 !*.py
+!*.slurm

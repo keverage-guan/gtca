@@ -87,6 +87,7 @@ class GTCALightningModule(pl.LightningModule):
             self._total_steps = int(self.trainer.estimated_stepping_batches)
         except Exception:
             self._total_steps = None
+        print(f"[fit_start] total optimizer steps: {self._total_steps}", flush=True)
 
     def _current_alpha(self) -> float:
         stage = self.train_stage
@@ -135,6 +136,8 @@ class GTCALightningModule(pl.LightningModule):
         loss = out.loss
         self.log("train_loss", loss, prog_bar=True)
         self.log("alpha", torch.tensor(alpha, device=self.device), prog_bar=True)
+        current_lr = self.optimizers().param_groups[0]["lr"]
+        self.log("lr", current_lr, on_step=True, on_epoch=False, prog_bar=False)
         return loss
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int):
@@ -205,7 +208,16 @@ def main() -> None:
     ap.add_argument("--max_epochs", type=int, default=1)
     ap.add_argument("--gradient_clip_val", type=float, default=1.0)
     ap.add_argument("--tqdm", action="store_true", help="Enable tqdm progress bar")
-
+    ap.add_argument(
+        "--ckpt_path",
+        type=str,
+        default=None,
+        help=(
+            "Path to a Lightning checkpoint from a previous training stage. "
+            "Only model weights are loaded; optimizer state and epoch counter "
+            "are discarded so each stage begins with a fresh optimiser."
+        ),
+    )
     args = ap.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -253,6 +265,26 @@ def main() -> None:
         alpha_warmup_ratio=args.alpha_warmup_ratio,
     )
 
+    if args.ckpt_path is not None:
+        print(f"Loading weights from checkpoint: {args.ckpt_path}")
+        ckpt = torch.load(args.ckpt_path, map_location="cpu")
+        # Lightning prefixes every key with "model." (the attribute name inside
+        # GTCALightningModule).  Strip that prefix to get GTCAModel keys.
+        raw_sd = ckpt.get("state_dict", ckpt)
+        cleaned_sd = {
+            (k[len("model."):] if k.startswith("model.") else k): v
+            for k, v in raw_sd.items()
+        }
+        missing, unexpected = lit.model.load_state_dict(cleaned_sd, strict=False)
+        if missing:
+            print(f"  Missing keys  ({len(missing)}): "
+                  f"{missing[:5]}{'...' if len(missing) > 5 else ''}")
+        if unexpected:
+            print(f"  Unexpected keys ({len(unexpected)}): "
+                  f"{unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
+        del ckpt, raw_sd, cleaned_sd
+        print("Weights loaded. Starting fresh optimiser for this stage.")
+
     ckpt_cb = ModelCheckpoint(
         dirpath=os.path.join(args.output_dir, "checkpoints"),
         save_top_k=2,
@@ -271,9 +303,9 @@ def main() -> None:
         max_epochs=args.max_epochs,
         accumulate_grad_batches=args.accumulate_grad_batches,
         gradient_clip_val=args.gradient_clip_val,
-        callbacks=[ckpt_cb, lr_cb],
+        callbacks=[ckpt_cb],
         logger=logger,
-        log_every_n_steps=10,
+        log_every_n_steps=1,
         enable_progress_bar=args.tqdm,
     )
 
