@@ -39,6 +39,8 @@ from utils.gtca_format import (
     normalize_whitespace,
 )
 
+from model.dep_labels import dep_label_to_id, dep_dir_to_id
+
 # Parsing dependencies
 import spacy
 import benepar  # noqa: F401
@@ -335,6 +337,56 @@ def _parse_question_to_tree(
         tok_set.update(st.get("token_indices", []))
     return {"node_type": "question_root", "token_indices": sorted(tok_set), "children": sent_trees}
 
+def _parse_question_to_dep_tree(
+    nlp, question_text, prompt_offsets, prompt_question_start,
+):
+    question_text = question_text.strip()
+    if not question_text:
+        return None
+    doc = nlp(question_text)
+
+    sent_trees = []
+    for sent in doc.sents:
+        # Map each spaCy token -> its BPE subword indices (sentence-local char span)
+        tok_subwords = {}
+        for tok in sent:
+            ws = tok.idx - sent.start_char
+            we = ws + len(tok.text)
+            tok_subwords[tok.i] = _leaf_token_indices(
+                prompt_offsets, prompt_question_start + sent.start_char, (ws, we)
+            )
+
+        def build(tok, is_root):
+            child_nodes = [build(c, is_root=False) for c in tok.children]
+            subtree = set(tok_subwords.get(tok.i, []))
+            for ch in child_nodes:
+                subtree.update(ch["token_indices"])
+            if is_root:
+                direction = "root"
+            elif tok.head.i < tok.i:
+                direction = "head_left"
+            else:
+                direction = "head_right"
+            return {
+                "node_type": tok.dep_,
+                "token_indices": sorted(subtree),
+                "head_token_indices": tok_subwords.get(tok.i, []),
+                "dep_label_id": dep_label_to_id(tok.dep_),
+                "dep_dir_id": dep_dir_to_id(direction),
+                "children": child_nodes,
+            }
+
+        sent_trees.append(build(sent.root, is_root=True))
+
+    if not sent_trees:
+        return None
+    if len(sent_trees) == 1:
+        return sent_trees[0]
+    tok_set = set()
+    for st in sent_trees:
+        tok_set.update(st["token_indices"])
+    return {"node_type": "question_root", "token_indices": sorted(tok_set),
+            "dep_label_id": 0, "dep_dir_id": 0, "children": sent_trees}
 
 def _build_mcqa_parsed(
     tokenizer: Any,
@@ -385,7 +437,8 @@ def _build_mcqa_parsed(
     all_indices = list(range(len(input_ids)))
 
     question_text = mcqa.user_content[mcqa.question_span[0] : mcqa.question_span[1]]
-    question_tree = _parse_question_to_tree(nlp, question_text, offsets, q_span_global[0])
+    parse_fn = _parse_question_to_dep_tree if tree_type == "dependency" else _parse_question_to_tree
+    question_tree = parse_fn(nlp, question_text, offsets, q_span_global[0])
 
     options_children = []
     options_tok = set()
@@ -411,7 +464,8 @@ def _build_mcqa_parsed(
 
     root = {"node_type": "root", "token_indices": all_indices, "children": children}
 
-    parsed = {"tree_structure": root, "update_token_indices": update_token_indices}
+    parsed = {"tree_structure": root, "update_token_indices": update_token_indices,
+          "tree_type": tree_type}
     return input_ids, parsed
 
 
@@ -442,12 +496,14 @@ def _build_cola_parsed(
     user_pos = text.find(sent)
     question_tree = None
     if user_pos >= 0:
-        question_tree = _parse_question_to_tree(nlp, sent, offsets, user_pos)
+        parse_fn = _parse_question_to_dep_tree if tree_type == "dependency" else _parse_question_to_tree
+        question_tree = parse_fn(nlp, sent, offsets, user_pos)
 
     root = {"node_type": "root", "token_indices": list(range(len(input_ids))), "children": []}
     if question_tree is not None:
         root["children"].append(question_tree)
-    parsed = {"tree_structure": root, "update_token_indices": update_token_indices}
+    parsed = {"tree_structure": root, "update_token_indices": update_token_indices,
+          "tree_type": tree_type}
     return input_ids, parsed
 
 
@@ -462,11 +518,13 @@ def _build_blimp_parsed(
     # Update all tokens
     update_token_indices = list(range(len(input_ids)))
 
-    question_tree = _parse_question_to_tree(nlp, sentence, offsets, 0)
+    parse_fn = _parse_question_to_dep_tree if tree_type == "dependency" else _parse_question_to_tree
+    question_tree = parse_fn(nlp, sentence, offsets, 0)
     root = {"node_type": "root", "token_indices": list(range(len(input_ids))), "children": []}
     if question_tree is not None:
         root["children"].append(question_tree)
-    parsed = {"tree_structure": root, "update_token_indices": update_token_indices}
+    parsed = {"tree_structure": root, "update_token_indices": update_token_indices,
+          "tree_type": tree_type}
     return input_ids, parsed
 
 
@@ -481,6 +539,8 @@ def main() -> None:
     ap.add_argument("--benepar_model", type=str, default="benepar_en3")
     ap.add_argument("--include_label_splits", type=str, default="train,validation")
     ap.add_argument("--splits", type=str, default="train,validation,test")
+    ap.add_argument("--tree_type", type=str, default="constituency",
+                choices=["constituency", "dependency"])
     args = ap.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
