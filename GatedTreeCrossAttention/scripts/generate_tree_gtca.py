@@ -395,6 +395,7 @@ def _build_mcqa_parsed(
     example: Dict[str, Any],
     include_label: bool,
     max_length: int,
+    tree_type: str
 ) -> Tuple[List[int], Dict[str, Any]]:
     sys_prompt = get_system_prompt(task)
     turn_end = get_turn_end_token(tokenizer)
@@ -475,6 +476,7 @@ def _build_cola_parsed(
     example: Dict[str, Any],
     include_label: bool,
     max_length: int,
+    tree_type: str,
 ) -> Tuple[List[int], Dict[str, Any]]:
     sys_prompt = get_system_prompt("cola")
     turn_end = get_turn_end_token(tokenizer)
@@ -512,6 +514,7 @@ def _build_blimp_parsed(
     nlp: Any,
     sentence: str,
     max_length: int,
+    tree_type: str
 ) -> Tuple[List[int], Dict[str, Any]]:
     input_ids, offsets = _tokenize_with_offsets(tokenizer, sentence, max_length=max_length)
 
@@ -549,7 +552,7 @@ def main() -> None:
     tokenizer.padding_side = "left"
 
     nlp = spacy.load(args.spacy_model)
-    if "benepar" not in nlp.pipe_names:
+    if args.tree_type == "constituency" and "benepar" not in nlp.pipe_names:
         nlp.add_pipe("benepar", config={"model": args.benepar_model})
 
     split_files = _find_split_files(args.data_path)
@@ -571,13 +574,13 @@ def main() -> None:
                 for sent in tqdm((good, bad), desc="Sentences", unit="sent", leave=False, miniters=100):
                     if not sent:
                         continue
-                    input_ids, parsed = _build_blimp_parsed(tokenizer, nlp, sent, max_length=args.max_length)
+                    input_ids, parsed = _build_blimp_parsed(tokenizer, nlp, sent, max_length=args.max_length, tree_type=args.tree_type)
                     db.set(_hash_unpadded_input_ids(input_ids), parsed)
             elif args.task == "cola":
-                input_ids, parsed = _build_cola_parsed(tokenizer, nlp, ex, include_label=do_label, max_length=args.max_length)
+                input_ids, parsed = _build_cola_parsed(tokenizer, nlp, ex, include_label=do_label, max_length=args.max_length, tree_type=args.tree_type)
                 db.set(_hash_unpadded_input_ids(input_ids), parsed)
             else:
-                input_ids, parsed = _build_mcqa_parsed(tokenizer, nlp, args.task, ex, include_label=do_label, max_length=args.max_length)
+                input_ids, parsed = _build_mcqa_parsed(tokenizer, nlp, args.task, ex, include_label=do_label, max_length=args.max_length, tree_type=args.tree_type)
                 db.set(_hash_unpadded_input_ids(input_ids), parsed)
 
     db.close()
