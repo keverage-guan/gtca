@@ -218,6 +218,7 @@ def main() -> None:
             "are discarded so each stage begins with a fresh optimiser."
         ),
     )
+    ap.add_argument("--tree_type", type=str, default="constituency")
     args = ap.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -243,6 +244,7 @@ def main() -> None:
         torch_dtype=torch.bfloat16 if "bf16" in args.precision else torch.float16,
         attn_dropout=0.0,
         max_chunks_per_height=64,
+        tree_type=args.tree_type
     )
 
     dm = QADataModule(

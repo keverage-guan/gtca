@@ -120,15 +120,22 @@ class ParseTreeEncoder(nn.Module):
     Leaves thus have height 0.
     """
 
-    def __init__(self, hidden_dim: int, num_layers: int, max_chunks_per_height: int = 64):
+    def __init__(self, hidden_dim, num_layers, max_chunks_per_height=64,
+             use_dep_labels=False, num_dep_labels=0, num_dep_dirs=0):
         super().__init__()
         self.hidden_dim = int(hidden_dim)
         self.num_layers = int(num_layers)
         self.max_chunks_per_height = int(max_chunks_per_height)
+        self.use_dep_labels = bool(use_dep_labels)
 
-        # Height-specific projections (indexed by height, clamped to [0, num_layers-1]).
         self.proj = nn.ModuleList([nn.Linear(hidden_dim, hidden_dim, bias=False) for _ in range(num_layers)])
         self.norm = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(num_layers)])
+
+        if self.use_dep_labels:
+            self.rel_emb = nn.Embedding(num_dep_labels, hidden_dim)
+            self.dir_emb = nn.Embedding(num_dep_dirs, hidden_dim)
+            nn.init.zeros_(self.rel_emb.weight)   # start == pure subtree pooling
+            nn.init.zeros_(self.dir_emb.weight)
 
     def forward(
         self,
@@ -171,6 +178,10 @@ class ParseTreeEncoder(nn.Module):
                     continue
 
                 pooled = _mean_pool(token_embeddings[b], tok_idx)  # (D,)
+                if self.use_dep_labels:
+                    lab = torch.tensor(node.get("dep_label_id", 0), device=pooled.device)
+                    drc = torch.tensor(node.get("dep_dir_id", 0), device=pooled.device)
+                    pooled = pooled + self.rel_emb(lab) + self.dir_emb(drc)
                 proj = self.proj[h_clamped](pooled)
                 proj = self.norm[h_clamped](proj)
                 chunks_by_h.setdefault(h_clamped, []).append(proj)
@@ -317,6 +328,8 @@ class GTCAModel(nn.Module):
         torch_dtype: torch.dtype = torch.bfloat16,
         attn_dropout: float = 0.0,
         max_chunks_per_height: int = 64,
+        tree_type="constituency", 
+        use_dep_labels=None
     ):
         super().__init__()
         self.tokenizer = tokenizer
@@ -338,10 +351,16 @@ class GTCAModel(nn.Module):
         hidden_size = int(getattr(self.config, "hidden_size"))
         num_layers = int(getattr(self.config, "num_hidden_layers"))
 
+        self.tree_type = tree_type
+        use_dep = (tree_type == "dependency") if use_dep_labels is None else use_dep_labels
+        from model.dep_labels import NUM_DEP_LABELS, NUM_DEP_DIRS
         self.parse_tree_encoder = ParseTreeEncoder(
             hidden_dim=hidden_size,
             num_layers=num_layers,
             max_chunks_per_height=max_chunks_per_height,
+            use_dep_labels=use_dep,
+            num_dep_labels=NUM_DEP_LABELS,
+            num_dep_dirs=NUM_DEP_DIRS,
         )
 
         self.cross_attn_layers = nn.ModuleList()
@@ -445,6 +464,14 @@ class GTCAModel(nn.Module):
                 remapped_trees.append({"token_indices": [], "children": []})
                 continue
 
+            cache_tt = parsed.get("tree_type", "constituency")
+            if cache_tt != self.tree_type:
+                raise ValueError(
+                    f"tree_type mismatch: model built for '{self.tree_type}' "
+                    f"but cached trees are '{cache_tt}'. Regenerate the cache with "
+                    f"--tree_type {self.tree_type} (or re-init the model to match)."
+                )
+
             unpadded_len = int(attention_mask[b].sum().item())
             pad_len = t - unpadded_len
 
@@ -459,6 +486,8 @@ class GTCAModel(nn.Module):
                 return {
                     "node_type": node.get("node_type", "node"),
                     "token_indices": tok_idx_remap,
+                    "dep_label_id": node.get("dep_label_id", 0),
+                    "dep_dir_id": node.get("dep_dir_id", 0),
                     "children": [remap_node(ch) for ch in children],
                 }
 

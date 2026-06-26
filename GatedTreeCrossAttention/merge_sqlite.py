@@ -14,9 +14,9 @@ practice CLOTH and MMLU prompts are disjoint, so collisions are extremely rare.
 
 Usage:
     python merge_sqlite.py \
-        --db_a  cache/cloth_qwen.sqlite \
-        --db_b  cache/mmlu_qwen.sqlite \
-        --out   cache/cloth_mmlu_qwen.sqlite
+        --db_a  dep_cache/cloth_qwen.sqlite \
+        --db_b  dep_cache/mmlu_qwen.sqlite \
+        --out   dep_cache/cloth_mmlu_qwen.sqlite
 
 The source databases are never modified.
 """
