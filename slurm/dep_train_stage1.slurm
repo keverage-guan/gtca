@@ -12,7 +12,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
-#SBATCH --time=00:02:00
+#SBATCH --time=10:00:00
 #SBATCH --mail-type=FAIL
 #SBATCH --mail-user=kg8941@princeton.edu
 #SBATCH --output=../logs/dep_gtca_stage1.out
